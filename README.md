@@ -1,16 +1,46 @@
-# React + Vite
+SHERLOCK AI — Autonomous OSINT & Explainability Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+An autonomous investigative agent. Enter a query — it searches the web, cross-references entities, scores sources, and shows the entire investigation as an interactive, explainable node map.
 
-Currently, two official plugins are available:
+Built for the Explainable Agentic Systems Challenge (Problem 4: OSINT Investigative Agent).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Highlights
 
-## React Compiler
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Autonomous multi-step search & scoring
+Interactive drag-and-drop investigation map
+Claim-by-claim breakdown with source citations
+Direct links to original articles / Wikipedia
+Conflict detection between sources
+SHAP relevance score + overall confidence score
+Full audit trail of agent actions
 
-## Expanding the Oxlint configuration
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Tech Stack
+
+React · Node.js/Express · Tavily (search) · Wikipedia API (entities) · OpenRouter (LLM reasoning) · SSE (live pipeline progress)
+
+Prerequisites
+
+
+Node.js v18+
+API keys: OpenRouter, Tavily
+
+
+Run Locally
+
+bashgit clone <your-repo-url>
+cd sherlock-ai
+npm install
+
+Create .env in root:
+
+OPENROUTER_API_KEY=sk-or-v1-your-key
+TAVILY_API_KEY=tvly-your-key
+PORT=3000
+
+Start:
+
+bashnpm start
+
+Open http://localhost:3000, enter a query, click Analyze.
