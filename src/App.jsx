@@ -553,10 +553,10 @@ function App() {
                 
                 if (isEvidence) {
                   strokeWidth = Math.max(2, Math.min(10, Math.abs(node.shap) / 4.5));
-                  strokeColor = node.shap >= 0 ? '#00D4FF' : '#8B5CF6';
+                  strokeColor = node.conflict ? '#EF4444' : (node.shap >= 0 ? '#00D4FF' : '#8B5CF6');
                 } else {
                   strokeWidth = 2.5;
-                  strokeColor = '#EF4444'; // Red thread
+                  strokeColor = '#8B5CF6'; // Violet thread
                 }
 
                 return (
@@ -636,7 +636,11 @@ function App() {
               if (isQuery) {
                 cardClass += "bg-navy-800 border-cyan text-cyan font-black text-sm shadow-[0_0_15px_rgba(0,212,255,0.25)] pulse-glow-cyan";
               } else if (isEvidence) {
-                cardClass += "bg-navy-800 border-cyan text-white text-xs hover:shadow-[0_0_15px_rgba(0,212,255,0.2)] pulse-glow-cyan";
+                if (node.conflict) {
+                  cardClass += "bg-navy-800 border-red-500 text-white text-xs hover:shadow-[0_0_15px_rgba(239,68,68,0.35)] pulse-glow-red";
+                } else {
+                  cardClass += "bg-navy-800 border-cyan text-white text-xs hover:shadow-[0_0_15px_rgba(0,212,255,0.2)] pulse-glow-cyan";
+                }
               } else {
                 cardClass += "bg-navy-800 border-violet text-white text-xs hover:shadow-[0_0_15px_rgba(139,92,246,0.2)] pulse-glow-violet";
               }
@@ -656,8 +660,8 @@ function App() {
                     zIndex: isQuery ? 30 : 20
                   }}
                 >
-                  <div className={`text-[9px] font-black uppercase mb-1 tracking-wider ${isQuery || isEvidence ? 'text-cyan' : 'text-violet'}`}>
-                    {node.label}
+                  <div className={`text-[9px] font-black uppercase mb-1 tracking-wider ${isQuery ? 'text-cyan' : (isEvidence ? (node.conflict ? 'text-red-500' : 'text-cyan') : 'text-violet')}`}>
+                    {node.conflict ? '⚠️ CONFLICT' : node.label}
                   </div>
                   <div className="text-xs font-bold leading-tight line-clamp-2">
                     {node.title}

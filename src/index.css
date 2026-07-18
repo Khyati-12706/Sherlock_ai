@@ -60,3 +60,18 @@
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
+
+@keyframes pulseGlowRed {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(239, 68, 68, 0.45);
+    transform: scale(1.02);
+  }
+}
+
+.pulse-glow-red {
+  animation: pulseGlowRed 3s infinite ease-in-out;
+}

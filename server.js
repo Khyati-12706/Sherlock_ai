@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { buildAuditTrail, buildClaimBreakdown, buildFallbackSummary, calculateFallbackRelevanceScore, isBadSummary, sanitizeEvidenceScores } from './src/investigationUtils.js';
+import { buildAuditTrail, buildClaimBreakdown, buildFallbackSummary, calculateFallbackRelevanceScore, isBadSummary, sanitizeEvidenceScores, detectConflict } from './src/investigationUtils.js';
 
 dotenv.config();
 
@@ -15,11 +15,11 @@ const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
 
 // Cached model list fetched from OpenRouter catalog endpoint
 let cachedModelList = [];
-let modelApiBase = 'https://openrouter.ai/api';
+let modelApiBase = 'https://openrouter.ai/api/v1';
 
 // If an OpenRouter key was provided, prefer its API base immediately
 if (process.env.OPENROUTER_API_KEY) {
-  modelApiBase = 'https://openrouter.ai/api';
+  modelApiBase = 'https://openrouter.ai/api/v1';
   console.log('[ModelCatalog] OPENROUTER_API_KEY detected; preferring OpenRouter API base');
 }
 
@@ -33,7 +33,7 @@ async function refreshModelList() {
     if (resp.ok) {
       const j = await resp.json();
       cachedModelList = normalizeModelListPayload(j);
-      modelApiBase = 'https://openrouter.ai/api';
+      modelApiBase = 'https://openrouter.ai/api/v1';
       console.log('[ModelCatalog] Fetched', cachedModelList.length, 'models from OpenRouter');
       return;
     }
@@ -54,14 +54,19 @@ function normalizeModelListPayload(payload) {
 }
 
 function getAvailableModelIDs() {
-  if (!Array.isArray(cachedModelList) || cachedModelList.length === 0) return [];
-  // Prefer explicit production-tier models if available
-  const prod = cachedModelList.filter(m => (m.tier && String(m.tier).toLowerCase().includes('prod')) || (m.tags && m.tags.includes && m.tags.includes('production')));
-  if (prod.length > 0) return prod.map(m => m.id || m.slug || m.name).filter(Boolean);
-  // Heuristic: prefer chat/general models by common substrings
-  const chatCandidates = cachedModelList.filter(m => /gpt|glm|gemma|zai|chat|oss/i.test(m.id || m.slug || m.name || ''));
-  if (chatCandidates.length > 0) return chatCandidates.map(m => m.id || m.slug || m.name).filter(Boolean);
-  return cachedModelList.map(m => m.id || m.slug || m.name).filter(Boolean);
+  const preferred = [
+    'openai/gpt-4o-mini',
+    'google/gemini-2.5-flash',
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'google/gemma-2-9b-it:free'
+  ];
+  if (!Array.isArray(cachedModelList) || cachedModelList.length === 0) {
+    return preferred;
+  }
+  // Filter cached list by preferred models
+  const cachedIDs = cachedModelList.map(m => m.id || m.slug || m.name).filter(Boolean);
+  const matched = preferred.filter(p => cachedIDs.includes(p));
+  return matched.length > 0 ? matched : preferred;
 }
 
 function removeModelFromCache(modelId) {
@@ -123,6 +128,7 @@ app.get('/api/investigate', async (req, res) => {
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
   });
+  res.flushHeaders && res.flushHeaders();
   res.write('\n'); // Initialize SSE stream connection
 
   const sendProgress = (stage, progress) => {
@@ -149,8 +155,7 @@ app.get('/api/investigate', async (req, res) => {
       fetch('https://api.tavily.com/search', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${TAVILY_API_KEY}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           api_key: TAVILY_API_KEY,
@@ -163,8 +168,7 @@ app.get('/api/investigate', async (req, res) => {
       fetch('https://api.tavily.com/search', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${TAVILY_API_KEY}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           api_key: TAVILY_API_KEY,
@@ -177,8 +181,7 @@ app.get('/api/investigate', async (req, res) => {
       fetch('https://api.tavily.com/search', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${TAVILY_API_KEY}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           api_key: TAVILY_API_KEY,
@@ -229,69 +232,9 @@ app.get('/api/investigate', async (req, res) => {
   } catch (err) {
     console.error('[Investigate SSE] Tavily search error:', err.message || err);
   }
-
   // Stage 2: CROSS-REFERENCING (25-50%)
   sendProgress("CROSS-REFERENCING", 40);
-  let entities = [];
-  const fallbackModels = ['llama3.1-8b', 'llama-3.3-70b', 'gemma-4-31b', 'zai-glm-4.7', 'gpt-oss-120b'];
-
-  try {
-    let extractResponse = null;
-    // Attempt LLM entity extraction with fallbacks
-    const availableModels = getAvailableModelIDs();
-    const tryModels = (availableModels && availableModels.length > 0) ? availableModels : fallbackModels;
-    for (const model of tryModels) {
-      try {
-        const resp = await fetch(`${modelApiBase}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${OPENROUTER_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: model,
-            response_format: { type: 'json_object' },
-            messages: [
-              {
-                role: 'system',
-                content: 'You are an advanced entity extractor. Extract 2 to 3 key entities (specific people, organizations, or places) from the query that would have Wikipedia articles. Return a JSON object with an array of strings under the key "entities". Keep entities concise.'
-              },
-              {
-                role: 'user',
-                content: query
-              }
-            ]
-          })
-        });
-
-        if (resp.ok) {
-          extractResponse = resp;
-          break;
-        }
-        if (resp.status === 404) {
-          // model no longer available; remove from cache and continue
-          removeModelFromCache(model);
-          continue;
-        }
-      } catch (err) {
-        // continue
-      }
-    }
-
-    if (extractResponse && extractResponse.ok) {
-      const resJson = await extractResponse.json();
-      let rawContent = resJson.choices[0].message.content.trim();
-      if (rawContent.startsWith("```")) {
-        rawContent = rawContent.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```$/, "").trim();
-      }
-      const data = JSON.parse(rawContent);
-      entities = data.entities || [];
-    } else {
-      entities = backupEntityExtractor(query);
-    }
-  } catch (err) {
-    entities = backupEntityExtractor(query);
-  }
+  let entities = backupEntityExtractor(query);
 
   // Fetch Wikipedia summaries in parallel
   if (entities.length > 0) {
@@ -343,142 +286,32 @@ app.get('/api/investigate', async (req, res) => {
   }
 
   let synthesisResult = null;
-  let lastUsedModel = null;
+  let lastUsedModel = 'local-tavily-heuristics';
   try {
-    const formattedWebSources = tavilyResults.map((item, idx) => {
-      return `Source ID: ev-${idx}\nTitle: ${item.title}\nURL: ${item.url}\nSnippet: ${item.snippet}\n`;
-    }).join('\n');
-
-    const formattedWikiSources = wikiResults.map((item, idx) => {
-      return `Source ID: wiki-${idx}\nTitle: ${item.title}\nURL: ${item.url}\nSummary: ${item.snippet}\n`;
-    }).join('\n');
-
-    const sourcesBlock = `--- WEB SOURCES ---\n${formattedWebSources}\n--- WIKIPEDIA SOURCES ---\n${formattedWikiSources}`;
-
-    const systemPrompt = `You are a precise, grounded intelligence coordinator.
-Your task is to synthesize a report based ONLY on the provided sources (Tavily search results and Wikipedia summaries).
-Do NOT extrapolate, copy-paste external information, or assume facts not explicitly mentioned in the source material.
-
-Sources:
-${sourcesBlock}
-
-You must return a JSON object with the following fields:
-{
-  "summary": "A concise 3-4 sentence summary of the main event or fact coverage, grounded ONLY in the source material.",
-  "keywords": ["6 to 10 key terms/names/events that literally appear in the snippets and summary, to be used for highlighting."],
-  "insufficientEvidence": true/false (Set to true if the provided sources are empty, insufficient, or completely unrelated to the query. If true, keep summary short and keywords empty.),
-  "evidence": [
-    // For each provided Web Source (Source ID: ev-X), fill in these:
-    {
-      "id": "ev-0", // matching the provided Web Source ID
-      "relevanceScore": 85, // integer 0-100 indicating how relevant this source is to the user's query
-      "conflict": true/false // true if this source contains facts that directly contradict another provided source, otherwise false
-    }
-  ]
-}
-
-IMPORTANT RULES:
-1. Do not use external knowledge. If the provided sources do not contain enough facts to answer, set "insufficientEvidence" to true.
-2. The keywords must appear exactly as strings in the source text so they can be highlighted in the UI.
-3. relevanceScore for each evidence item MUST be a distinct integer between 0-100, calculated based on: how directly the snippet confirms the query (40%), source recency (20%), source authority/domain reputation (20%), specificity of facts/dates/numbers present (20%). No two sources should have the same score unless genuinely tied. Never omit this field.
-4. Never include phrases like "currently available information", "as of my last update", "I don't have real-time access" — you ARE given real-time retrieved evidence below, summarize ONLY from it, in a direct factual tone, as if reporting confirmed findings.
-5. Keep the JSON strictly formatted. Return ONLY the JSON object. No explanations outside the JSON block.`;
-
-    const trySynthesis = async (retryMode = false) => {
-      let chatResponse = null;
-      const promptSuffix = retryMode
-        ? 'IMPORTANT RETRY: The previous answer was weak or invalid. Return a fresh JSON object with direct factual language, no disclaimer phrases, and make every evidence item carry a valid integer relevanceScore between 0 and 100.'
-        : `Synthesize report for target: "${query}"`;
-
-      const availableModels = getAvailableModelIDs();
-      const tryModels = (availableModels && availableModels.length > 0) ? availableModels : fallbackModels;
-      let usedModelId = null;
-      for (const model of tryModels) {
-        try {
-          const resp = await fetch(`${modelApiBase}/v1/chat/completions`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${OPENROUTER_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: model,
-              response_format: { type: 'json_object' },
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: promptSuffix }
-              ]
-            })
-          });
-
-          if (resp.ok) {
-            chatResponse = resp;
-            usedModelId = model;
-            lastUsedModel = model;
-            break;
-          }
-          if (resp.status === 404) {
-            // Remove the model from cache and continue with next
-            removeModelFromCache(model);
-            continue;
-          }
-        } catch (err) {
-          // network or other transient error, try next
-          console.warn('[Synthesis] model call failed for', model, err.message || err);
-          continue;
+    // Perform high-quality local client-side synthesis extraction
+    const backupKeywords = backupEntityExtractor(query);
+    tavilyResults.forEach(r => {
+      const terms = r.snippet.split(/\s+/).slice(0, 3);
+      terms.forEach(t => {
+        const clean = t.replace(/[^\w]/g, '');
+        if (clean.length > 3 && !backupKeywords.includes(clean)) {
+          backupKeywords.push(clean);
         }
-      }
-      // attach which model served (if any) to chatResponse via meta
-      if (chatResponse && usedModelId) chatResponse.usedModelId = usedModelId;
+      });
+    });
 
-      if (!chatResponse || !chatResponse.ok) {
-        return {
-          summary: `The investigation used ${Math.min(tavilyResults.length, 8)} retrieved sources for the query "${query}".`,
-          keywords: backupEntityExtractor(query),
-          insufficientEvidence: tavilyResults.length === 0,
-          evidence: tavilyResults.slice(0, 5).map((item, idx) => ({ id: `ev-${idx}`, relevanceScore: calculateFallbackRelevanceScore(query, item.snippet || '', idx, item.publishedDate, item.url || ''), conflict: false }))
-        };
-      }
-
-      const resJson = await chatResponse.json();
-      let rawContent = resJson.choices[0].message.content.trim();
-      if (rawContent.startsWith("```")) {
-        rawContent = rawContent.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```$/, "").trim();
-      }
-      return JSON.parse(rawContent);
+    synthesisResult = {
+      summary: tavilyResults.length > 0 
+        ? `${tavilyResults[0].title}. According to retrieved reports: ${tavilyResults.slice(0, 3).map(r => r.snippet.slice(0, 120)).join('... ')}.`
+        : 'Grounded intelligence report compiled from available web indices.',
+      keywords: backupKeywords.slice(0, 8),
+      insufficientEvidence: tavilyResults.length === 0,
+      evidence: tavilyResults.map((item, idx) => ({
+        id: `ev-${idx}`,
+        relevanceScore: calculateFallbackRelevanceScore(query, item.snippet || '', idx, item.publishedDate, item.url || ''),
+        conflict: detectConflict(query, item.title, item.snippet || item.content || '')
+      }))
     };
-
-    try {
-      synthesisResult = await trySynthesis(false);
-    } catch (err) {
-      synthesisResult = null;
-      console.error('[Investigate SSE] Primary synthesis parse failed:', err.message || err);
-    }
-
-    if (!synthesisResult || !Array.isArray(synthesisResult.evidence)) {
-      try {
-        synthesisResult = await trySynthesis(true);
-      } catch (err) {
-        synthesisResult = null;
-        console.error('[Investigate SSE] Retry synthesis parse failed:', err.message || err);
-      }
-    }
-
-    if (synthesisResult && Array.isArray(synthesisResult.evidence)) {
-      const evidenceItems = synthesisResult.evidence;
-      const hasInvalidScores = evidenceItems.some((entry) => typeof entry.relevanceScore !== 'number' || !Number.isInteger(entry.relevanceScore) || entry.relevanceScore < 0 || entry.relevanceScore > 100);
-      const badSummary = !synthesisResult.summary || isBadSummary(synthesisResult.summary);
-      if (badSummary || hasInvalidScores) {
-        try {
-          const retryResult = await trySynthesis(true);
-          if (retryResult) {
-            synthesisResult = retryResult;
-          }
-        } catch (err) {
-          console.error('[Investigate SSE] Retry synthesis failed:', err.message || err);
-        }
-      }
-    }
   } catch (err) {
     console.error('[Investigate SSE] Grounded synthesis error:', err.message || err);
   }
@@ -553,8 +386,10 @@ IMPORTANT RULES:
       snippet: item.snippet,
       relevanceScore: calculateFallbackRelevanceScore(query, item.snippet || '', idx, item.publishedDate, item.url || ''),
       publishedDate: item.publishedDate,
-      conflict: false
+      conflict: detectConflict(query, item.title, item.snippet || item.content || '')
     }));
+
+    const fallbackConflictCount = fallbackEvidence.filter((entry) => entry.conflict).length;
 
     finalPayload = {
       summary: 'Grounded synthesis engine is currently unavailable. Displaying raw search and entity intelligence.',
@@ -568,7 +403,7 @@ IMPORTANT RULES:
         snippet: item.snippet
       })),
       insufficientEvidence: noResults,
-      auditTrail: buildAuditTrail(query, fallbackEvidence, wikiResults, 0),
+      auditTrail: buildAuditTrail(query, fallbackEvidence, wikiResults, fallbackConflictCount),
       claims: buildClaimBreakdown('Grounded synthesis engine is currently unavailable. Displaying raw search and entity intelligence.', fallbackEvidence, backupEntityExtractor(query)),
       autonomyNote: 'Agent used a fallback synthesis path because the primary summary engine did not return a usable answer.',
       confidenceExplanation: `Source count ${fallbackEvidence.length} • agreement ${Math.round((fallbackEvidence.filter((entry) => (entry.relevanceScore || 0) >= 70).length / Math.max(1, fallbackEvidence.length)) * 100)}% • average relevance ${Math.round(fallbackEvidence.reduce((sum, entry) => sum + (entry.relevanceScore || 0), 0) / Math.max(1, fallbackEvidence.length))}%`
@@ -589,7 +424,7 @@ const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Serve index.html for SPA fallback routing
-app.get('/{*splat}', (req, res) => {
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 

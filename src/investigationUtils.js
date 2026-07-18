@@ -24,7 +24,7 @@ function makeDistinctScores(baseScore, index, totalCount) {
   const scores = new Set();
   let candidate = baseScore;
   let attempts = 0;
-  while (scores.size < totalCount) {
+  while (scores.size < totalCount && attempts < 100) {
     const offset = attempts % 7;
     const adjusted = clamp(candidate + offset, 0, 100);
     if (!scores.has(adjusted)) {
@@ -159,4 +159,28 @@ export function buildAuditTrail(query = '', evidence = [], contextual = [], conf
     { step: 3, label: 'Cerebras scored sources', detail: `Cerebras scored ${evidence.length} sources for relevance/confidence` },
     { step: 4, label: 'Flagged conflicts', detail: `${conflictCount} conflicts flagged` }
   ];
+}
+
+export function detectConflict(query, title, snippet) {
+  const queryLower = (query || '').toLowerCase();
+  const titleLower = (title || '').toLowerCase();
+  const snippetLower = (snippet || '').toLowerCase();
+
+  const DEBUNKING_WORDS = [
+    'fake', 'hoax', 'debunked', 'false', 'misleading', 'untrue', 'not true',
+    'rumor', 'rumour', 'fabricated', 'fact-check', 'fact check', 'myth', 
+    'disproven', 'debunks', 'refutes', 'denies', 'denied', 'unverified',
+    'conspiracy'
+  ];
+
+  // Only check words that are not already present in the user query
+  const activeDebunkingWords = DEBUNKING_WORDS.filter(word => !queryLower.includes(word));
+
+  for (const word of activeDebunkingWords) {
+    if (titleLower.includes(word) || snippetLower.includes(word)) {
+      return true;
+    }
+  }
+
+  return false;
 }
